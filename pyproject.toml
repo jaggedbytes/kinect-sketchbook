@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kinect-sketchbook"
+version = "0.1.0"
+description = "A tiny framework for writing standalone Kinect v2 sketches, one file per sketch."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "opencv-python",
+]
+
+[project.optional-dependencies]
+# Kept optional so the package still installs where pylibfreenect2 won't build
+# (e.g. working on sketches against recordings, once that source exists).
+kinect = ["pylibfreenect2"]
+
+[project.scripts]
+sketchbook = "kinect_sketchbook.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kinect_sketchbook"]
