@@ -3,7 +3,7 @@
 A tiny framework for writing standalone Kinect v2 sketches, one file per sketch. The runner owns the device and the loop; a sketch just reacts to frames.
 
 ```python
-from depthsketch import Sketch
+from kinect_sketchbook import Sketch
 
 class Hello(Sketch):
     def update(self, frame):
@@ -85,7 +85,10 @@ What a frame contains:
 | `frame.depth` | 424×512 float32 | millimeters; 0 = no reading. Always present. |
 | `frame.ir` | 424×512 float32 | intensity, or `None` |
 | `frame.color` | 1080×1920×3 uint8 | BGR, or `None` |
+| `frame.intrinsics` | `fx`, `fy`, `cx`, `cy` | depth camera calibration in pixels, read from the device |
 | `frame.index`, `frame.timestamp` | | frame count, seconds (monotonic) |
+
+To turn a depth pixel `(u, v)` into a 3D point in meters: `z = depth / 1000`, `x = (u - cx) * z / fx`, `y = (v - cy) * z / fy` (x right, y down, z away from the camera).
 
 `depth_to_bgr(depth)` turns a depth map into a viewable image (near = bright).
 
@@ -102,6 +105,33 @@ sketchbook run SKETCH [--pipeline gl|cl|cpu] [--mirror] [--no-window] [--frames 
 ## Sketches
 
 - **`swipe.py`**: treats whatever is closest to the camera (within 10 cm of the nearest point) as your hand, shown in green, and reports left and right swipes. It's sensitive to anything else being closer than your hand, and its thresholds are untuned.
+- **`mesh.py`**: builds a 3D mesh from a series of depth snapshots and shows it in a viewer with x/y/z grid planes. Needs Open3D (`pip install open3d "numpy<2"`).
+
+### Using `mesh.py`
+
+1. Run `sketchbook run sketches/mesh.py` and point the Kinect at an object at least 50 cm away.
+2. Press `[` and `]` to move the far limit until only the object is highlighted in blue. Anything outside the limit (the wall behind it, for example) is left out of the mesh.
+3. Press space to take a snapshot. Move the Kinect a little around the object, or turn the object about 10–15°, and take another. Repeat.
+4. Press `m` to build the mesh. It's saved to `captures/<timestamp>/mesh.ply` (along with the raw snapshots in `snaps.npz`) and opens in a viewer:
+   - The mesh sits on the floor grid (y = 0), centered on x and z, in meters.
+   - Grid lines are every 5 cm, on the floor, the back wall, and the left wall.
+   - The axes at the grid corner are red = x, green = y (up), and blue = z.
+   - Drag to orbit, scroll to zoom, and close the window to return to the live view.
+5. Press `c` to clear the snapshots and start over.
+
+Rebuild a saved capture without the Kinect (useful for experimenting on another machine):
+
+```sh
+python sketches/mesh.py captures/<timestamp>/snaps.npz
+```
+
+`.ply` files also open in MeshLab and Blender.
+
+Tips:
+
+- Overlap matters more than coverage. Each snapshot is aligned to the one before it, so small steps work better than big ones. If a step was too big, the console prints a warning with the overlap percentage.
+- Matte, textured objects work best. Shiny, black, or see-through surfaces return little or no depth.
+- The Kinect can't see anything closer than about 50 cm.
 
 ## Building libfreenect2
 

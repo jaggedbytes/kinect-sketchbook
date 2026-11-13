@@ -7,7 +7,7 @@ from collections.abc import Iterator
 
 import numpy as np
 
-from ..frame import Frame
+from ..frame import DEFAULT_INTRINSICS, Frame, Intrinsics
 
 PIPELINES = {
     "gl": "OpenGLPacketPipeline",
@@ -22,8 +22,8 @@ def _import_pylibfreenect2():
     except ImportError as e:
         raise SystemExit(
             "pylibfreenect2 isn't importable.\n"
-            "  Install it with:  LIBFREENECT2_INSTALL_PREFIX=$HOME/.local pip install -e '.[kinect]'\n"
-            "  and make sure the libfreenect2 shared library is on your library path\n"
+            "  It needs Python 3.12 with cython<3, numpy<2 and setuptools<80; see Setup in the README.\n"
+            "  Also make sure the libfreenect2 shared library is on your library path\n"
             "  (LD_LIBRARY_PATH on Linux, DYLD_LIBRARY_PATH on macOS).\n"
             f"  Original error: {e}"
         ) from e
@@ -55,6 +55,7 @@ class KinectSource:
         self.serial = serial
         self.mirror = mirror
         self._fn = self._device = self._listener = None
+        self.intrinsics: Intrinsics = DEFAULT_INTRINSICS
 
     def __enter__(self) -> KinectSource:
         lib = _import_pylibfreenect2()
@@ -84,7 +85,23 @@ class KinectSource:
             self._device.setColorFrameListener(self._listener)
         self._device.setIrAndDepthFrameListener(self._listener)
         self._device.startStreams(rgb="color" in self.streams, depth=True)
+        self.intrinsics = self._read_intrinsics()
         return self
+
+    def _read_intrinsics(self) -> Intrinsics:
+        """The depth camera's factory calibration (only readable once streams have started)."""
+        try:
+            p = self._device.getIrCameraParams()
+            intrinsics = Intrinsics(fx=p.fx, fy=p.fy, cx=p.cx, cy=p.cy)
+        except Exception:
+            intrinsics = DEFAULT_INTRINSICS
+        if self.mirror:
+            # Flipping the image horizontally moves the principal point too.
+            intrinsics = Intrinsics(
+                fx=intrinsics.fx, fy=intrinsics.fy,
+                cx=intrinsics.width - 1 - intrinsics.cx, cy=intrinsics.cy,
+            )
+        return intrinsics
 
     def __iter__(self) -> Iterator[Frame]:
         if self._listener is None:
@@ -108,7 +125,10 @@ class KinectSource:
                 ir = None if ir is None else np.fliplr(ir).copy()
                 color = None if color is None else np.fliplr(color).copy()
 
-            yield Frame(index=index, timestamp=time.monotonic(), depth=depth, ir=ir, color=color)
+            yield Frame(
+                index=index, timestamp=time.monotonic(),
+                depth=depth, ir=ir, color=color, intrinsics=self.intrinsics,
+            )
             index += 1
 
     def __exit__(self, *exc) -> None:
