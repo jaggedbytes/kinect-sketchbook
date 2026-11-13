@@ -17,6 +17,8 @@ dependencies = [
 # Kept optional so the package still installs where pylibfreenect2 won't build
 # (e.g. working on sketches against recordings, once that source exists).
 kinect = ["pylibfreenect2"]
+# ML pose tracking (kinect_sketchbook.tracking). Also needs a model file; see the README.
+pose = ["mediapipe"]
 
 [project.scripts]
 sketchbook = "kinect_sketchbook.cli:main"

@@ -7,7 +7,9 @@ from collections.abc import Iterator
 
 import numpy as np
 
-from ..frame import DEFAULT_INTRINSICS, Frame, Intrinsics
+from ..frame import (
+    COLOR_HEIGHT, COLOR_WIDTH, DEFAULT_INTRINSICS, DEPTH_HEIGHT, DEPTH_WIDTH, Frame, Intrinsics,
+)
 
 PIPELINES = {
     "gl": "OpenGLPacketPipeline",
@@ -55,7 +57,9 @@ class KinectSource:
         self.serial = serial
         self.mirror = mirror
         self._fn = self._device = self._listener = None
+        self._registration = None
         self.intrinsics: Intrinsics = DEFAULT_INTRINSICS
+        self.color_intrinsics: Intrinsics | None = None
 
     def __enter__(self) -> KinectSource:
         lib = _import_pylibfreenect2()
@@ -86,7 +90,26 @@ class KinectSource:
         self._device.setIrAndDepthFrameListener(self._listener)
         self._device.startStreams(rgb="color" in self.streams, depth=True)
         self.intrinsics = self._read_intrinsics()
+        if "color" in self.streams:
+            self._start_registration(lib)
         return self
+
+    def _start_registration(self, lib) -> None:
+        """Reproject depth into the color view each frame, using the factory calibration."""
+        ir_params = self._device.getIrCameraParams()
+        color_params = self._device.getColorCameraParams()
+        self._registration = lib.Registration(ir_params, color_params)
+        self._undistorted = lib.Frame(DEPTH_WIDTH, DEPTH_HEIGHT, 4)
+        self._registered = lib.Frame(DEPTH_WIDTH, DEPTH_HEIGHT, 4)
+        # libfreenect2 pads bigdepth with one row above and below the color image.
+        self._bigdepth = lib.Frame(COLOR_WIDTH, COLOR_HEIGHT + 2, 4)
+        cx = color_params.cx
+        if self.mirror:
+            cx = COLOR_WIDTH - 1 - cx
+        self.color_intrinsics = Intrinsics(
+            fx=color_params.fx, fy=color_params.fy, cx=cx, cy=color_params.cy,
+            width=COLOR_WIDTH, height=COLOR_HEIGHT,
+        )
 
     def _read_intrinsics(self) -> Intrinsics:
         """The depth camera's factory calibration (only readable once streams have started)."""
@@ -113,10 +136,16 @@ class KinectSource:
                 # Copy out before release(): the buffers are reused by libfreenect2.
                 depth = frames["depth"].asarray().copy()
                 ir = frames["ir"].asarray().copy() if "ir" in self.streams else None
-                color = None
+                color = color_depth = None
                 if "color" in self.streams:
                     # libfreenect2 delivers BGRX; drop the padding byte.
                     color = np.ascontiguousarray(frames["color"].asarray()[:, :, :3])
+                    self._registration.apply(
+                        frames["color"], frames["depth"], self._undistorted, self._registered,
+                        bigdepth=self._bigdepth,
+                    )
+                    color_depth = self._bigdepth.asarray(np.float32)[1:-1].copy()
+                    color_depth[~np.isfinite(color_depth)] = 0  # match depth: 0 = no reading
             finally:
                 self._listener.release(frames)
 
@@ -124,10 +153,12 @@ class KinectSource:
                 depth = np.fliplr(depth).copy()
                 ir = None if ir is None else np.fliplr(ir).copy()
                 color = None if color is None else np.fliplr(color).copy()
+                color_depth = None if color_depth is None else np.fliplr(color_depth).copy()
 
             yield Frame(
                 index=index, timestamp=time.monotonic(),
                 depth=depth, ir=ir, color=color, intrinsics=self.intrinsics,
+                color_depth=color_depth, color_intrinsics=self.color_intrinsics,
             )
             index += 1
 
@@ -135,4 +166,5 @@ class KinectSource:
         if self._device is not None:
             self._device.stop()
             self._device.close()
-        self._fn = self._device = self._listener = None
+        self._fn = self._device = self._listener = self._registration = None
+

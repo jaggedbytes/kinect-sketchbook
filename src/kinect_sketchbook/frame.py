@@ -7,8 +7,9 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-# Kinect v2 depth/IR resolution.
+# Kinect v2 depth/IR and color resolutions.
 DEPTH_HEIGHT, DEPTH_WIDTH = 424, 512
+COLOR_HEIGHT, COLOR_WIDTH = 1080, 1920
 
 @dataclass(frozen=True)
 class Intrinsics:
@@ -39,6 +40,11 @@ class Frame:
     ir:         (424, 512) float32 intensity, or None if the sketch didn't ask for it.
     color:      (1080, 1920, 3) uint8 BGR, or None if the sketch didn't ask for it.
     intrinsics: calibration for depth and ir, read from the device.
+    color_depth:      (1080, 1920) float32 millimeters: depth reprojected into the color
+                      camera's view using the factory calibration, so color_depth[y, x]
+                      is the distance at color[y, x]. 0 means "no reading".
+                      None unless the sketch asked for color.
+    color_intrinsics: calibration for color and color_depth, or None without color.
     """
 
     index: int
@@ -47,6 +53,8 @@ class Frame:
     ir: np.ndarray | None = None
     color: np.ndarray | None = None
     intrinsics: Intrinsics = DEFAULT_INTRINSICS
+    color_depth: np.ndarray | None = None
+    color_intrinsics: Intrinsics | None = None
 
 
 def depth_to_bgr(depth: np.ndarray, near: float = 500.0, far: float = 4500.0) -> np.ndarray:

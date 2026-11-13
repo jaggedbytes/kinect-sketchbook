@@ -12,6 +12,7 @@ venv/
 
 # Sketch output (mesh.py scans: mesh.ply, snaps.npz)
 captures/
+models/
 
 # Editors / OS
 .vscode/

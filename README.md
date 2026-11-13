@@ -86,11 +86,58 @@ What a frame contains:
 | `frame.ir` | 424×512 float32 | intensity, or `None` |
 | `frame.color` | 1080×1920×3 uint8 | BGR, or `None` |
 | `frame.intrinsics` | `fx`, `fy`, `cx`, `cy` | depth camera calibration in pixels, read from the device |
+| `frame.color_depth` | 1080×1920 float32 | millimeters, depth reprojected into the color camera's view, so `color_depth[y, x]` is the distance at `color[y, x]`; 0 = no reading. Only with `"color"`. |
+| `frame.color_intrinsics` | `fx`, `fy`, `cx`, `cy` | color camera calibration, for `color` and `color_depth`. Only with `"color"`. |
 | `frame.index`, `frame.timestamp` | | frame count, seconds (monotonic) |
 
 To turn a depth pixel `(u, v)` into a 3D point in meters: `z = depth / 1000`, `x = (u - cx) * z / fx`, `y = (v - cy) * z / fy` (x right, y down, z away from the camera).
 
 `depth_to_bgr(depth)` turns a depth map into a viewable image (near = bright).
+
+## Tracking
+
+`kinect_sketchbook.tracking` holds things inferred from frames. Sketches opt in by creating a tracker in `setup()` and calling it in `update()`.
+
+### Pose
+
+`PoseTracker` runs a machine-learning model ([MediaPipe Pose Landmarker](https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker)) on the color image to find up to `num_poses` people, 33 joints each. Each joint is then placed in 3D by looking up the Kinect depth under it.
+
+```sh
+pip install mediapipe "numpy<2"
+mkdir -p models && curl -L -o models/pose_landmarker_full.task \
+  https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/latest/pose_landmarker_full.task
+```
+
+```python
+from kinect_sketchbook.tracking import Joint, PoseTracker, draw_skeleton
+
+class Wave(Sketch):
+    streams = ("depth", "color")   # the model needs color
+
+    def setup(self):
+        self.pose = PoseTracker()     # variant="lite" | "full" | "heavy"
+
+    def update(self, frame):
+        for body in self.pose.update(frame):
+            if body.visible(Joint.RIGHT_WRIST):
+                print(body.xyz[Joint.RIGHT_WRIST])   # meters, measured
+```
+
+Each `Skeleton` keeps the model's guess and the sensor's measurement apart:
+
+| Field | Shape | Meaning |
+| --- | --- | --- |
+| `image_xy` | 33×2 | joint positions in color-image pixels |
+| `visibility` | 33 | the model's confidence (0–1) that the joint is in view |
+| `xyz` | 33×3 | meters in camera space, **measured** from depth; NaN where there's no reading |
+| `model_xyz` | 33×3 | meters, centered between the hips, **guessed** by the model |
+
+Things to know:
+
+- Running the model and the color stream costs about 20–25 ms per frame (measured on the aarch64 Linux machine this was written on). Use `variant="lite"` if it can't keep up.
+- With `--mirror`, the model sees a flipped image, so it labels your right hand `LEFT_*`. Positions on screen are still correct.
+- A joint that's hidden behind something gets that thing's depth in `xyz`. Check `visible()` first.
+- The model only sees what's in the color image, which needs light. Depth works in the dark; pose doesn't.
 
 ## Running
 
@@ -105,6 +152,7 @@ sketchbook run SKETCH [--pipeline gl|cl|cpu] [--mirror] [--no-window] [--frames 
 ## Sketches
 
 - **`swipe.py`**: treats whatever is closest to the camera (within 10 cm of the nearest point) as your hand, shown in green, and reports left and right swipes. It's sensitive to anything else being closer than your hand, and its thresholds are untuned.
+- **`pose.py`**: finds up to three people with `PoseTracker` and draws their skeletons over the depth view at 1920×1080, labeling each wrist with its measured distance. The model sees the color image, but only depth is shown. Needs the pose setup in [Tracking](#tracking).
 - **`mesh.py`**: builds a 3D mesh from a series of depth snapshots and shows it in a viewer with x/y/z grid planes. Needs Open3D (`pip install open3d "numpy<2"`).
 
 ### Using `mesh.py`
