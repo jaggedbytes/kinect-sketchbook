@@ -1,19 +1,18 @@
 """Swipe: hold a hand out in front of you and swipe left or right.
 
-The hand is "whatever is closest to the camera": everything within HAND_SLAB_MM
-of the nearest depth reading. Its centroid's horizontal movement over a short
-window is the swipe.
+The hand is "whatever is closest to the camera" (tracking.nearest_hand):
+everything within HAND_SLAB_MM of the nearest depth reading. Its centroid's
+horizontal movement over a short window is the swipe (tracking.SwipeDetector).
 
-Run:  kinect_sketchbook run sketches/swipe.py
+Run:  sketchbook run sketches/swipe.py
 Keys: q / Esc to quit.
 """
-
-from collections import deque
 
 import cv2
 import numpy as np
 
 from kinect_sketchbook import Frame, Sketch, depth_to_bgr
+from kinect_sketchbook.tracking import SwipeDetector, nearest_hand
 
 
 class Swipe(Sketch):
@@ -27,40 +26,24 @@ class Swipe(Sketch):
     COOLDOWN_S = 0.6     # ignore new swipes for this long after one fires
 
     def setup(self):
-        self.trail = deque()          # (timestamp, centroid_x)
+        self.swipes = SwipeDetector(self.WINDOW_S, self.MIN_DX, self.COOLDOWN_S)
         self.mask = None
         self.centroid = None
-        self.cooldown_until = 0.0
         self.label, self.label_until = "", 0.0
 
     def update(self, frame: Frame):
-        now, depth = frame.timestamp, frame.depth
-
         # 1. Track: the nearest slab of depth is the hand.
-        self.mask, self.centroid = None, None
-        valid = depth[depth > 0]
-        if valid.size:
-            mask = (depth > 0) & (depth < valid.min() + self.HAND_SLAB_MM)
-            ys, xs = np.nonzero(mask)
-            if xs.size > self.MIN_PIXELS:
-                self.mask = mask
-                self.centroid = (int(xs.mean()), int(ys.mean()))
-                self.trail.append((now, xs.mean()))
+        hand = nearest_hand(frame.depth, self.HAND_SLAB_MM, self.MIN_PIXELS)
+        self.mask = hand.mask if hand else None
+        self.centroid = (int(hand.centroid[0]), int(hand.centroid[1])) if hand else None
 
-        # 2. Feature: horizontal travel over the last WINDOW_S seconds.
-        while self.trail and now - self.trail[0][0] > self.WINDOW_S:
-            self.trail.popleft()
-
-        # 3 + 4. Recognize, with a cooldown so one swipe fires once.
-        if now >= self.cooldown_until and len(self.trail) > 4:
-            dx = self.trail[-1][1] - self.trail[0][1]
-            if abs(dx) > self.MIN_DX:
-                # Direction is in screen terms. If it's opposite your hand, run with --mirror.
-                self.label = "swipe right" if dx > 0 else "swipe left"
-                print(self.label, flush=True)
-                self.trail.clear()
-                self.cooldown_until = now + self.COOLDOWN_S
-                self.label_until = now + 0.8
+        # 2. Recognize: horizontal travel, with a cooldown so one swipe fires once.
+        direction = self.swipes.feed(frame.timestamp, hand.centroid[0] if hand else None)
+        if direction:
+            # Direction is in screen terms. If it's opposite your hand, run with --mirror.
+            self.label = f"swipe {direction}"
+            print(self.label, flush=True)
+            self.label_until = frame.timestamp + 0.8
 
     def draw(self, frame: Frame):
         image = depth_to_bgr(frame.depth)

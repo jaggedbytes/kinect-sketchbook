@@ -96,7 +96,13 @@ To turn a depth pixel `(u, v)` into a 3D point in meters: `z = depth / 1000`, `x
 
 ## Tracking
 
-`kinect_sketchbook.tracking` holds things inferred from frames. Sketches opt in by creating a tracker in `setup()` and calling it in `update()`.
+`kinect_sketchbook.tracking` holds the reusable building blocks; a sketch combines them into an interaction. Sketches opt in by creating what they need in `setup()` and calling it in `update()`.
+
+| Module | What it gives you |
+| --- | --- |
+| `hand` | `nearest_hand(depth)`: whatever is closest to the camera, as a mask and centroid. Depth only, no model. |
+| `gestures` | `SwipeDetector`: feed it an x position each frame; it returns `"left"`/`"right"` when a swipe happens. Takes plain numbers, so it works with any tracker. |
+| `pose` | `PoseTracker`: skeletons from a machine-learning model, measured with depth (below). |
 
 ### Pose
 
