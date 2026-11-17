@@ -1,4 +1,4 @@
-"""Command line: `depthsketch run sketches/swipe.py`."""
+"""Command line: `sketchbook run sketches/swipe.py`."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from .sources.kinect import PIPELINES, KinectSource
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="depthsketch")
+    parser = argparse.ArgumentParser(prog="sketchbook")
     sub = parser.add_subparsers(dest="command", required=True)
 
     run_p = sub.add_parser("run", help="run a sketch file")

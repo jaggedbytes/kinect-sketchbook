@@ -19,7 +19,7 @@ def load_sketch(path: str | Path) -> Sketch:
     if not path.is_file():
         raise SystemExit(f"No sketch file at {path}")
 
-    spec = importlib.util.spec_from_file_location(f"depthsketch_user.{path.stem}", path)
+    spec = importlib.util.spec_from_file_location(f"kinect_sketchbook_sketches.{path.stem}", path)
     if spec is None or spec.loader is None:
         raise SystemExit(f"Can't load {path.name} as Python; sketches must be .py files")
     module = importlib.util.module_from_spec(spec)

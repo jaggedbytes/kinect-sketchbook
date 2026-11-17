@@ -16,7 +16,7 @@ class Sketch:
                  Ask only for what you use; color in particular costs CPU to decode.
     """
 
-    title: str = "depthsketch"
+    title: str = "sketchbook"
     streams: tuple[str, ...] = ("depth",)
 
     def setup(self) -> None:
