@@ -20,6 +20,8 @@ def load_sketch(path: str | Path) -> Sketch:
         raise SystemExit(f"No sketch file at {path}")
 
     spec = importlib.util.spec_from_file_location(f"depthsketch_user.{path.stem}", path)
+    if spec is None or spec.loader is None:
+        raise SystemExit(f"Can't load {path.name} as Python; sketches must be .py files")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
@@ -43,6 +45,9 @@ def run(sketch: Sketch, source=None, show: bool = True, max_frames: int | None =
         source = KinectSource(streams=sketch.streams)
 
     sketch.setup()
+    if show:
+        # Resizable; the image is scaled to fit, keeping its aspect ratio.
+        cv2.namedWindow(sketch.title, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_NORMAL)
     try:
         with source:
             for frame in source:

@@ -29,6 +29,7 @@ class Pose(Sketch):
         self.pose.update(frame)
 
     def draw(self, frame: Frame):
+        assert frame.color_depth is not None, 'needs streams = ("depth", "color")'
         image = depth_to_bgr(frame.color_depth)
         for body, color in zip(self.pose.skeletons, COLORS):
             draw_skeleton(image, body, color)
