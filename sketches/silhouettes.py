@@ -1,10 +1,11 @@
 """Silhouettes: each person opts in with an open palm, then only their cutout is shown.
 
 Several people can stand in front of the Kinect. Each one who holds an open palm
-gets a solid-color silhouette on a black frame; everyone else stays hidden. Colors
-are unique per person from a fixed palette (reuse only when there are more people
-than colors). When a consented person leaves the frame, their cutout disappears
-and they must opt in again.
+gets a solid-color silhouette on a black frame; everyone else stays hidden. Open
+palms are detected on a depth-scaled crop around the hand so farther people still
+register. Colors are unique per person from a fixed palette (reuse only when there
+are more people than colors). When a consented person leaves the frame, their
+cutout disappears and they must opt in again.
 
 Run:  sketchbook run sketches/silhouettes.py
 Keys: q / Esc to quit.
@@ -20,7 +21,9 @@ import cv2
 import numpy as np
 
 from kinect_sketchbook import Frame, Sketch
-from kinect_sketchbook.tracking import GestureTracker, Joint, PoseTracker, Skeleton
+from kinect_sketchbook.tracking import (
+    GestureTracker, Joint, PoseTracker, Skeleton, hand_roi,
+)
 
 CORE = (
     Joint.NOSE,
@@ -29,7 +32,11 @@ CORE = (
     Joint.LEFT_HIP,
     Joint.RIGHT_HIP,
 )
-WRISTS = (Joint.LEFT_WRIST, Joint.RIGHT_WRIST)
+# Wrist plus a fingertip so the crop centers on the palm, not the forearm.
+HAND_ANCHORS = (
+    (Joint.LEFT_WRIST, Joint.LEFT_INDEX),
+    (Joint.RIGHT_WRIST, Joint.RIGHT_INDEX),
+)
 OPEN_PALM = "Open_Palm"
 PROMPT = "Show open palm to consent to capture"
 
@@ -70,29 +77,41 @@ class Silhouettes(Sketch):
     MIN_CORE = 3
     PALM_FRAMES = 2
     MATCH_PX = 280          # torso may move this far between frames and stay the same person
-    PALM_WRIST_PX = 220     # open palm must be this close to a wrist to count for that person
     DEPTH_SLAB_MM = 400     # keep color_depth within this of the torso depth
     JOINT_PAD_PX = 90       # expand the skeleton bbox so arms/head are inside the cutout
     MIN_MASK_PX = 800       # ignore tiny depth blobs (noise)
+    HAND_M = 0.45           # meters of space the open-palm crop should cover
 
     def setup(self):
         self.pose = PoseTracker(variant="full", num_poses=self.MAX_PEOPLE)
-        self.gestures = GestureTracker(
-            gestures=(OPEN_PALM,), num_hands=self.MAX_PEOPLE * 2, min_score=0.5,
-        )
+        # ROI path uses IMAGE mode; num_hands here is only for a full-frame fallback.
+        self.gestures = GestureTracker(gestures=(OPEN_PALM,), num_hands=2, min_score=0.5)
         self.people: list[Person] = []
         self._next_id = 1
 
     def update(self, frame: Frame):
         bodies = [b for b in self.pose.update(frame) if self._in_frame(b, frame)]
-        self.gestures.update(frame)
-        palms = [h for h in self.gestures.hands if h.name == OPEN_PALM]
         self._match_people(bodies, frame.timestamp)
 
+        # Depth-scaled wrist crops keep far hands large enough for Open_Palm.
+        # Skip people who already consented — no need to re-run the model on them.
+        pending: list[Person] = []
+        rois: list[tuple[int, int, int, int]] = []
         for person in self.people:
-            if person.body is None:
+            if person.consented or person.body is None:
                 continue
-            if self._palm_for(person, palms):
+            roi = self._hand_roi(person.body, frame)
+            if roi is None:
+                person.palm_streak = 0
+                continue
+            pending.append(person)
+            rois.append(roi)
+
+        if not rois:
+            return
+
+        for person, hands in zip(pending, self.gestures.recognize_rois(frame, rois)):
+            if any(h.name == OPEN_PALM for h in hands):
                 person.palm_streak += 1
                 if person.palm_streak >= self.PALM_FRAMES:
                     person.consented = True
@@ -175,18 +194,35 @@ class Silhouettes(Sketch):
                 return color
         return PALETTE[(self._next_id - 1) % len(PALETTE)]
 
-    def _palm_for(self, person: Person, palms) -> bool:
-        """True when an Open_Palm hand is near this person's wrist."""
-        body = person.body
-        assert body is not None
-        wrist_pts = [body.image_xy[j] for j in WRISTS if body.visible(j)]
-        if not wrist_pts:
-            return False
-        for palm in palms:
-            for wrist in wrist_pts:
-                if float(np.linalg.norm(palm.image_xy - wrist)) <= self.PALM_WRIST_PX:
-                    return True
-        return False
+    def _hand_roi(self, body: Skeleton, frame: Frame) -> tuple[int, int, int, int] | None:
+        """Depth-scaled crop around the clearest hand (palm-centered when possible)."""
+        if frame.color is None:
+            return None
+        height, width = frame.color.shape[:2]
+        fx = frame.color_intrinsics.fx if frame.color_intrinsics is not None else 1081.0
+
+        best = None  # (visibility, center, depth_m)
+        for wrist_j, tip_j in HAND_ANCHORS:
+            if not body.visible(wrist_j):
+                continue
+            z = body.xyz[wrist_j, 2]
+            if not np.isfinite(z):
+                # Fall back to torso depth so a missing wrist reading still gets a crop.
+                core_z = body.xyz[[j for j in CORE if body.visible(j)], 2]
+                core_z = core_z[np.isfinite(core_z)]
+                if core_z.size == 0:
+                    continue
+                z = float(np.median(core_z))
+            if body.visible(tip_j):
+                center = 0.5 * (body.image_xy[wrist_j] + body.image_xy[tip_j])
+            else:
+                center = body.image_xy[wrist_j]
+            visibility = float(body.visibility[wrist_j])
+            if best is None or visibility > best[0]:
+                best = (visibility, center, float(z))
+        if best is None:
+            return None
+        return hand_roi(best[1], best[2], (height, width), fx=fx, hand_m=self.HAND_M)
 
     def _silhouette(self, body: Skeleton, color_depth: np.ndarray) -> np.ndarray | None:
         """Bool mask of this person in the color image, from depth near the torso."""
