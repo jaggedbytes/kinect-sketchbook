@@ -183,7 +183,7 @@ class Silhouettes(Sketch):
         image = np.zeros(shape, dtype=np.float32)
         if frame.color_depth is None:
             out = image.astype(np.uint8)
-            self._draw_prompt(out)
+            self._draw_prompt(out, 0)
             return out
 
         for person in self.people:
@@ -212,7 +212,7 @@ class Silhouettes(Sketch):
             image = image * (1.0 - a) + color * a
 
         out = np.clip(image, 0, 255).astype(np.uint8)
-        self._draw_prompt(out)
+        self._draw_prompt(out, sum(1 for p in self.people if p.consented))
         return out
 
     def teardown(self):
@@ -355,16 +355,17 @@ class Silhouettes(Sketch):
         return body.image_xy[core].mean(axis=0).astype(np.float32)
 
     @staticmethod
-    def _draw_prompt(image: np.ndarray) -> None:
+    def _draw_prompt(image: np.ndarray, silhouette_count: int) -> None:
         font = cv2.FONT_HERSHEY_SIMPLEX
         scale, thickness = 0.75, 2
         line_gap = 10
-        sizes = [cv2.getTextSize(line, font, scale, thickness)[0] for line in PROMPT_LINES]
+        lines = (*PROMPT_LINES, f"silhouettes: {silhouette_count}")
+        sizes = [cv2.getTextSize(line, font, scale, thickness)[0] for line in lines]
         max_w = max(w for w, _ in sizes)
         line_h = max(h for _, h in sizes)
         x = image.shape[1] - max_w - 36
         y = 36 + line_h
-        for i, line in enumerate(PROMPT_LINES):
+        for i, line in enumerate(lines):
             cv2.putText(
                 image, line, (x, y + i * (line_h + line_gap)),
                 font, scale, (210, 210, 210), thickness, cv2.LINE_AA,
