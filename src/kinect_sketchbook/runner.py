@@ -49,8 +49,24 @@ def run(sketch: Sketch, source=None, show: bool = True, max_frames: int | None =
 
     sketch.setup()
     if show:
-        # Resizable; the image is scaled to fit, keeping its aspect ratio.
-        cv2.namedWindow(sketch.title, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO | cv2.WINDOW_GUI_NORMAL)
+        # Scaling to the window is done by HighGUI (imshow), not by resizing the
+        # numpy buffer. keep_aspect picks letterbox vs free stretch.
+        # Note: on this OpenCV build WINDOW_KEEPRATIO == 0 (default); free stretch
+        # requires WINDOW_FREERATIO explicitly.
+        keep_aspect = getattr(sketch, "keep_aspect", True)
+        flags = cv2.WINDOW_NORMAL | cv2.WINDOW_GUI_NORMAL
+        if keep_aspect:
+            flags |= cv2.WINDOW_KEEPRATIO
+        else:
+            flags |= cv2.WINDOW_FREERATIO
+        cv2.namedWindow(sketch.title, flags)
+        size = getattr(sketch, "window_size", None)
+        if size is not None:
+            cv2.resizeWindow(sketch.title, int(size[0]), int(size[1]))
+        if getattr(sketch, "fill_display", False):
+            cv2.setWindowProperty(
+                sketch.title, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN,
+            )
     try:
         with source:
             for frame in source:

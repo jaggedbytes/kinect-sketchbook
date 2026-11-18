@@ -127,6 +127,8 @@ class Silhouettes(Sketch):
 
     title = "silhouettes"
     streams = ("depth", "color")
+    keep_aspect = False          # stretch when the window is resized
+    window_size = (960, 540)     # small start; resize freely from there
 
     MAX_PEOPLE = 6
     ABSENT_S = 0.5

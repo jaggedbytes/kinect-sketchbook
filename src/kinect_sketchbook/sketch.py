@@ -14,10 +14,19 @@ class Sketch:
         title:   window title.
         streams: which sensor streams to capture: any of "depth", "ir", "color".
                  Ask only for what you use; color in particular costs CPU to decode.
+        keep_aspect: when True (default), the window letterboxes to the image's
+                 aspect ratio. When False, the image is stretched to fill the window.
+        fill_display: when True, open the window maximized/fullscreen so it covers
+                 the display; useful with keep_aspect=False.
+        window_size: optional (width, height) for the initial window. None leaves
+                 the backend default.
     """
 
     title: str = "sketchbook"
     streams: tuple[str, ...] = ("depth",)
+    keep_aspect: bool = True
+    fill_display: bool = False
+    window_size: tuple[int, int] | None = None
 
     def setup(self) -> None:
         """Called once before the first frame."""
