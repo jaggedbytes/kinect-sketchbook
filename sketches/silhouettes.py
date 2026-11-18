@@ -51,6 +51,59 @@ PALETTE = (
     (0xFF, 0x30, 0x9B),
 )
 
+K_CLOSE = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+K_OPEN = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+
+
+def smooth_mask(
+    mask: np.ndarray,
+    prev_alpha: np.ndarray | None = None,
+    scale: int = 2,
+    blur: float = 9,
+    ema: float = 0.6,
+    min_area: float = 800,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Clean and soften a depth-slab mask.
+
+    mask: uint8 0/255. Returns (binary_mask, alpha) at the original size.
+    alpha is 0–1 for soft compositing; binary is the 0.5 threshold of that.
+    """
+    h, w = mask.shape
+
+    # 1. Close fills holes; open removes speckle.
+    m = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, K_CLOSE)
+    m = cv2.morphologyEx(m, cv2.MORPH_OPEN, K_OPEN)
+
+    # 2. Keep only real blobs (drops floating specks).
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    clean = np.zeros_like(m)
+    keep = [c for c in cnts if cv2.contourArea(c) > min_area]
+    if keep:
+        cv2.drawContours(clean, keep, -1, 255, -1)
+
+    alpha = np.zeros((h, w), np.float32)
+    ys, xs = np.nonzero(clean)
+    if xs.size:
+        # Upscale only the active region — full-frame × scale is too expensive at 1080p.
+        pad = int(blur * scale) + 4
+        x0 = max(0, int(xs.min()) - pad)
+        x1 = min(w, int(xs.max()) + pad + 1)
+        y0 = max(0, int(ys.min()) - pad)
+        y1 = min(h, int(ys.max()) + pad + 1)
+        crop = clean[y0:y1, x0:x1]
+        ch, cw = crop.shape
+        big = cv2.resize(crop, (cw * scale, ch * scale), interpolation=cv2.INTER_LINEAR)
+        big = cv2.GaussianBlur(big, (0, 0), blur)
+        soft = cv2.resize(big.astype(np.float32) / 255.0, (cw, ch), interpolation=cv2.INTER_LINEAR)
+        alpha[y0:y1, x0:x1] = soft
+
+    # 3. Temporal blend to stop frame-to-frame flicker (also fades when the body drops out).
+    if prev_alpha is not None:
+        alpha = ema * alpha + (1.0 - ema) * prev_alpha
+
+    binary = (alpha > 0.5).astype(np.uint8) * 255
+    return binary, alpha
+
 
 @dataclass
 class Person:
@@ -63,6 +116,7 @@ class Person:
     absent_since: float | None = None
     palm_streak: int = 0
     body: Skeleton | None = field(default=None, repr=False)
+    prev_alpha: np.ndarray | None = field(default=None, repr=False)
 
 
 class Silhouettes(Sketch):
@@ -78,9 +132,12 @@ class Silhouettes(Sketch):
     PALM_FRAMES = 2
     MATCH_PX = 280          # torso may move this far between frames and stay the same person
     DEPTH_SLAB_MM = 400     # keep color_depth within this of the torso depth
-    JOINT_PAD_PX = 90       # expand the skeleton bbox so arms/head are inside the cutout
+    JOINT_PAD_PX = 180      # search region only; depth slab still defines the shape
     MIN_MASK_PX = 800       # ignore tiny depth blobs (noise)
     HAND_M = 0.45           # meters of space the open-palm crop should cover
+    MASK_SCALE = 2          # upscale factor before edge blur
+    MASK_BLUR = 9           # higher = rounder / blobbier edges
+    MASK_EMA = 0.6          # higher = snappier; lower = steadier but laggier
 
     def setup(self):
         self.pose = PoseTracker(variant="full", num_poses=self.MAX_PEOPLE)
@@ -120,22 +177,43 @@ class Silhouettes(Sketch):
 
     def draw(self, frame: Frame):
         shape = frame.color.shape if frame.color is not None else (1080, 1920, 3)
-        image = np.zeros(shape, dtype=np.uint8)
-        if frame.color is None or frame.color_depth is None:
-            self._draw_prompt(image)
-            return image
+        image = np.zeros(shape, dtype=np.float32)
+        if frame.color_depth is None:
+            out = image.astype(np.uint8)
+            self._draw_prompt(out)
+            return out
 
+        any_consented = False
         for person in self.people:
-            if not person.consented or person.body is None:
+            if not person.consented:
+                person.prev_alpha = None
                 continue
-            mask = self._silhouette(person.body, frame.color_depth)
-            if mask is None:
-                continue
-            image[mask] = person.color
+            any_consented = True
+            raw = None
+            if person.body is not None:
+                raw = self._depth_mask(person.body, frame.color_depth)
+            if raw is None:
+                if person.prev_alpha is None:
+                    continue
+                raw = np.zeros(person.prev_alpha.shape, dtype=np.uint8)
 
-        if not any(p.consented for p in self.people):
-            self._draw_prompt(image)
-        return image
+            _, alpha = smooth_mask(
+                raw,
+                person.prev_alpha,
+                scale=self.MASK_SCALE,
+                blur=self.MASK_BLUR,
+                ema=self.MASK_EMA,
+                min_area=self.MIN_MASK_PX,
+            )
+            person.prev_alpha = alpha
+            color = np.array(person.color, dtype=np.float32)
+            a = alpha[..., None]
+            image = image * (1.0 - a) + color * a
+
+        out = np.clip(image, 0, 255).astype(np.uint8)
+        if not any_consented:
+            self._draw_prompt(out)
+        return out
 
     def teardown(self):
         self.pose.close()
@@ -224,8 +302,8 @@ class Silhouettes(Sketch):
             return None
         return hand_roi(best[1], best[2], (height, width), fx=fx, hand_m=self.HAND_M)
 
-    def _silhouette(self, body: Skeleton, color_depth: np.ndarray) -> np.ndarray | None:
-        """Bool mask of this person in the color image, from depth near the torso."""
+    def _depth_mask(self, body: Skeleton, color_depth: np.ndarray) -> np.ndarray | None:
+        """uint8 0/255 depth-slab mask inside an expanded skeleton search box."""
         core = [j for j in CORE if body.visible(j) and np.isfinite(body.xyz[j, 2])]
         if len(core) < self.MIN_CORE:
             return None
@@ -251,11 +329,8 @@ class Silhouettes(Sketch):
         if int(near.sum()) < self.MIN_MASK_PX:
             return None
 
-        # Fill small holes so clothing folds don't punch through the cutout.
-        kernel = np.ones((7, 7), np.uint8)
-        near_u8 = cv2.morphologyEx(near.astype(np.uint8), cv2.MORPH_CLOSE, kernel)
-        mask = np.zeros((h, w), dtype=bool)
-        mask[y0:y1, x0:x1] = near_u8.astype(bool)
+        mask = np.zeros((h, w), dtype=np.uint8)
+        mask[y0:y1, x0:x1] = near.astype(np.uint8) * 255
         return mask
 
     def _in_frame(self, body: Skeleton, frame: Frame) -> bool:
