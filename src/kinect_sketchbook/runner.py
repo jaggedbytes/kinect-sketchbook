@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import inspect
+import sys
 from pathlib import Path
 
 import cv2
@@ -23,6 +24,8 @@ def load_sketch(path: str | Path) -> Sketch:
     if spec is None or spec.loader is None:
         raise SystemExit(f"Can't load {path.name} as Python; sketches must be .py files")
     module = importlib.util.module_from_spec(spec)
+    # @dataclass (and similar) look the module up in sys.modules while the body runs.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
 
     classes = [

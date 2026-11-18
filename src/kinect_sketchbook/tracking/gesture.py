@@ -20,9 +20,11 @@ Needs MediaPipe and the model file (see the README):
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from ..frame import Frame
 
@@ -35,6 +37,18 @@ DEFAULT_MODEL = MODEL_DIR / "gesture_recognizer.task"
 
 # Same shrink PoseTracker uses so a 1920×1080 frame is cheap to run.
 DETECT_WIDTH = 960
+
+# MediaPipe hand landmark used as the hand's anchor in the image.
+_WRIST = 0
+
+
+@dataclass
+class HandGesture:
+    """One hand's top gesture and where it is in the color image."""
+
+    name: str
+    score: float
+    image_xy: np.ndarray  # (2,) pixels in the full color frame
 
 
 def _require_mediapipe():
@@ -91,11 +105,12 @@ class GestureTracker:
         )
         self._recognizer = vision.GestureRecognizer.create_from_options(options)
         self._last_ms = -1
+        self.hands: list[HandGesture] = []
         self.names: list[str] = []
         self.scores: list[float] = []
 
     def update(self, frame: Frame) -> list[str]:
-        """Top gesture name for each hand this frame. Also kept in self.names."""
+        """Top gesture name for each hand this frame. Also kept in self.names / self.hands."""
         if frame.color is None:
             raise ValueError('GestureTracker needs the color stream: set streams = ("color",) or ("depth", "color")')
 
@@ -113,20 +128,24 @@ class GestureTracker:
             self._mp.Image(self._mp.ImageFormat.SRGB, rgb), ms
         )
 
-        names: list[str] = []
-        scores: list[float] = []
-        for hand in result.gestures:
-            if not hand:
+        hands: list[HandGesture] = []
+        for gesture_list, landmarks in zip(result.gestures, result.hand_landmarks):
+            if not gesture_list or not landmarks:
                 continue
-            top = hand[0]
+            top = gesture_list[0]
             name = top.category_name or top.display_name or ""
             if not name or name == "None":
                 continue
-            names.append(name)
-            scores.append(float(top.score))
-        self.names = names
-        self.scores = scores
-        return names
+            wrist = landmarks[_WRIST]
+            hands.append(HandGesture(
+                name=name,
+                score=float(top.score),
+                image_xy=np.array([wrist.x * width, wrist.y * height], np.float32),
+            ))
+        self.hands = hands
+        self.names = [h.name for h in hands]
+        self.scores = [h.score for h in hands]
+        return self.names
 
     def sees(self, frame: Frame, name: str) -> bool:
         """True when any hand shows this gesture on this frame."""
