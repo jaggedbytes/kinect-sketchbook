@@ -1,9 +1,10 @@
 """Silhouettes: each person opts in with an open palm, then only their cutout is shown.
 
 Several people can stand in front of the Kinect. Each one who holds an open palm
-gets their color silhouette pasted onto a black frame; everyone else stays hidden.
-When a consented person leaves the frame, their cutout disappears and they must
-opt in again.
+gets a solid-color silhouette on a black frame; everyone else stays hidden. Colors
+are unique per person from a fixed palette (reuse only when there are more people
+than colors). When a consented person leaves the frame, their cutout disappears
+and they must opt in again.
 
 Run:  sketchbook run sketches/silhouettes.py
 Keys: q / Esc to quit.
@@ -32,6 +33,17 @@ WRISTS = (Joint.LEFT_WRIST, Joint.RIGHT_WRIST)
 OPEN_PALM = "Open_Palm"
 PROMPT = "Show open palm to consent to capture"
 
+# Unique fills for consented people (BGR for OpenCV). Hex: #FF1493, #7FFF00,
+# #FF6A00, #0A84FF, #FFE600, #9B30FF.
+PALETTE = (
+    (0x93, 0x14, 0xFF),
+    (0x00, 0xFF, 0x7F),
+    (0x00, 0x6A, 0xFF),
+    (0xFF, 0x84, 0x0A),
+    (0x00, 0xE6, 0xFF),
+    (0xFF, 0x30, 0x9B),
+)
+
 
 @dataclass
 class Person:
@@ -39,6 +51,7 @@ class Person:
 
     id: int
     torso_xy: np.ndarray
+    color: tuple[int, int, int]
     consented: bool = False
     absent_since: float | None = None
     palm_streak: int = 0
@@ -46,12 +59,12 @@ class Person:
 
 
 class Silhouettes(Sketch):
-    """Black frame with color cutouts of people who have shown an open palm."""
+    """Black frame with solid-color cutouts of people who have shown an open palm."""
 
     title = "silhouettes"
     streams = ("depth", "color")
 
-    MAX_PEOPLE = 4
+    MAX_PEOPLE = 6
     ABSENT_S = 0.5
     EDGE_MARGIN = 80
     MIN_CORE = 3
@@ -99,7 +112,7 @@ class Silhouettes(Sketch):
             mask = self._silhouette(person.body, frame.color_depth)
             if mask is None:
                 continue
-            image[mask] = frame.color[mask]
+            image[mask] = person.color
 
         if not any(p.consented for p in self.people):
             self._draw_prompt(image)
@@ -135,7 +148,12 @@ class Silhouettes(Sketch):
         for i, body in enumerate(bodies):
             if i in assigned:
                 continue
-            self.people.append(Person(id=self._next_id, torso_xy=torsos[i], body=body))
+            self.people.append(Person(
+                id=self._next_id,
+                torso_xy=torsos[i],
+                color=self._assign_color(),
+                body=body,
+            ))
             self._next_id += 1
 
         kept: list[Person] = []
@@ -148,6 +166,14 @@ class Silhouettes(Sketch):
                 kept.append(person)  # brief dropout: keep the latch
             # else: left the frame — drop track and consent
         self.people = kept
+
+    def _assign_color(self) -> tuple[int, int, int]:
+        """Next unused palette color; wrap when every color is already taken."""
+        used = {p.color for p in self.people}
+        for color in PALETTE:
+            if color not in used:
+                return color
+        return PALETTE[(self._next_id - 1) % len(PALETTE)]
 
     def _palm_for(self, person: Person, palms) -> bool:
         """True when an Open_Palm hand is near this person's wrist."""
