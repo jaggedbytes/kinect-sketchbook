@@ -38,7 +38,10 @@ HAND_ANCHORS = (
     (Joint.RIGHT_WRIST, Joint.RIGHT_INDEX),
 )
 OPEN_PALM = "Open_Palm"
-PROMPT = "Show open palm to consent to capture"
+PROMPT_LINES = (
+    "open palm: consent capture",
+    "leave frame: destroy data",
+)
 
 # Unique fills for consented people (BGR for OpenCV). Hex: #FF1493, #7FFF00,
 # #FF6A00, #0A84FF, #FFE600, #9B30FF.
@@ -183,12 +186,10 @@ class Silhouettes(Sketch):
             self._draw_prompt(out)
             return out
 
-        any_consented = False
         for person in self.people:
             if not person.consented:
                 person.prev_alpha = None
                 continue
-            any_consented = True
             raw = None
             if person.body is not None:
                 raw = self._depth_mask(person.body, frame.color_depth)
@@ -211,8 +212,7 @@ class Silhouettes(Sketch):
             image = image * (1.0 - a) + color * a
 
         out = np.clip(image, 0, 255).astype(np.uint8)
-        if not any_consented:
-            self._draw_prompt(out)
+        self._draw_prompt(out)
         return out
 
     def teardown(self):
@@ -357,9 +357,15 @@ class Silhouettes(Sketch):
     @staticmethod
     def _draw_prompt(image: np.ndarray) -> None:
         font = cv2.FONT_HERSHEY_SIMPLEX
-        scale, thickness = 0.85, 2
-        (tw, th), _ = cv2.getTextSize(PROMPT, font, scale, thickness)
-        x = image.shape[1] - tw - 36
-        y = image.shape[0] - 36
-        cv2.putText(image, PROMPT, (x, y), font, scale, (210, 210, 210),
-                    thickness, cv2.LINE_AA)
+        scale, thickness = 0.75, 2
+        line_gap = 10
+        sizes = [cv2.getTextSize(line, font, scale, thickness)[0] for line in PROMPT_LINES]
+        max_w = max(w for w, _ in sizes)
+        line_h = max(h for _, h in sizes)
+        x = image.shape[1] - max_w - 36
+        y = 36 + line_h
+        for i, line in enumerate(PROMPT_LINES):
+            cv2.putText(
+                image, line, (x, y + i * (line_h + line_gap)),
+                font, scale, (210, 210, 210), thickness, cv2.LINE_AA,
+            )
